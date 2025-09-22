@@ -3,9 +3,11 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
-	_ "github.com/lib/pq"
 	"log"
 	"net/http"
+	"strings"
+
+	_ "github.com/lib/pq"
 	// "strconv"
 	// "strings"
 )
@@ -189,13 +191,21 @@ func createLocation(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleLocations(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		getLocations(w, r)
-	case http.MethodPost:
-		createLocation(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
+	//Parse URL path to extract ID if present
+	path := strings.TrimPrefix(r.URL.Path, "/locations")
+
+
+	if path == "" || path == "/"
+	{
+		switch r.Method {
+		case http.MethodGet:
+			getLocations(w, r)
+		case http.MethodPost:
+			createLocation(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
 	}
 
 	// Handle /locations/{id}
@@ -204,6 +214,17 @@ func handleLocations(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Invalid location ID", http.StatusBadRequest)
 		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		getLocationByID(w, r, id)
+	case http.MethodPut:
+		updateLocation(w, r, id)
+	case http.MethodDelete:
+		deleteLocation(w, r, id)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
