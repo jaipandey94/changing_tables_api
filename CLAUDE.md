@@ -53,3 +53,11 @@ curl http://localhost:8080/locations
 ## Project Structure
 
 This is a minimal Go project with no additional directories or complex architecture. All functionality is contained in `main.go` with mock data for location information.
+
+## Git Workflow
+
+**IMPORTANT:** Always work on the `jai-dev` branch. Never commit directly to `master`.
+
+- Development branch: `jai-dev`
+- Main branch: `master` (for PRs only)
+- Always verify you're on `jai-dev` before making commits
