@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	_ "github.com/lib/pq"
-	// "strconv"
-	// "strings"
 )
 
 type Location struct {
@@ -21,6 +20,21 @@ type Location struct {
 }
 
 var db *sql.DB
+
+// handleError provides unified error handling and logging
+func handleError(w http.ResponseWriter, err error, message string, statusCode int) {
+	log.Printf("%s: %v", message, err)
+	http.Error(w, message, statusCode)
+}
+
+// handleDatabaseError handles database-specific errors
+func handleDatabaseError(w http.ResponseWriter, err error, operation string) {
+	if err == sql.ErrNoRows {
+		handleError(w, err, "Location not found", http.StatusNotFound)
+		return
+	}
+	handleError(w, err, "Database error", http.StatusInternalServerError)
+}
 
 // Initialize database connection
 func initDB() {
@@ -50,8 +64,7 @@ func initDB() {
 func getLocations(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query("Select id, name, address, latitude, longitude FROM locations ORDER by id")
 	if err != nil {
-		log.Printf("Database query error: %v\n", err)
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		handleDatabaseError(w, err, "query locations")
 		return
 	}
 	defer rows.Close()
@@ -72,21 +85,13 @@ func getLocations(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(locations)
 }
 
-func getLocationByID(w http.ResponseWriter, r *http.Request, id int)
-{
+func getLocationByID(w http.ResponseWriter, r *http.Request, id int) {
 	var loc Location
 	err := db.QueryRow(
-		"SELECT id, name, address, latitude, longitude, FROM locations WHERE id = $1", id,).Scan(&loc.ID, &loc.Name, &loc.Address, &loc.Lat, &loc.Lng)
-	)
-
-	if err == sql.ErrNoRows {
-		http.Error(w, "Location not found", http.StatusNotFound)
-		return
-	}
+		"SELECT id, name, address, latitude, longitude FROM locations WHERE id = $1", id).Scan(&loc.ID, &loc.Name, &loc.Address, &loc.Lat, &loc.Lng)
 
 	if err != nil {
-		log.Printf("Database query error: %v", err)
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		handleDatabaseError(w, err, "get location by ID")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -97,27 +102,23 @@ func updateLocation(w http.ResponseWriter, r *http.Request, id int) {
 	var updatedLocation Location
 	err := json.NewDecoder(r.Body).Decode(&updatedLocation)
 	if err != nil {
-		log.Printf("JSON decode error: %v", err)
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		handleError(w, err, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
 	// Update in Database
 	result, err := db.Exec(
-		"UPDATE locations SET name = $1, address = $2, latitude= $3, longitude = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5", updatedLocation.Name, updatedLocation.Address, updatedLocation.Lat, updatedLocation.Lng,
-	)
+		"UPDATE locations SET name = $1, address = $2, latitude = $3, longitude = $4 WHERE id = $5", updatedLocation.Name, updatedLocation.Address, updatedLocation.Lat, updatedLocation.Lng, id)
 
 	if err != nil {
-		log.Printf("Database update error: %v", err)
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		handleDatabaseError(w, err, "update location")
 		return
 	}
 
 	// Check if any rows were affected
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		log.Printf("Error checking rows affected: %v", err)
-		http.Error(w, "DAtabase error", http.StatusInternalServerError)
+		handleError(w, err, "Database error", http.StatusInternalServerError)
 		return
 	}
 
@@ -132,19 +133,18 @@ func updateLocation(w http.ResponseWriter, r *http.Request, id int) {
 }
 
 func deleteLocation(w http.ResponseWriter, r *http.Request, id int) {
-	result, err := db.Exec("DELETE FROM locations WHERE id = $1", id,)
+	result, err := db.Exec("DELETE FROM locations WHERE id = $1", id)
 
 	if err != nil {
-		log.Printf("Database delete error: %v", err)
-		http.Error(w, "Dabatase error", http.StatusInternalServerError)
+		handleDatabaseError(w, err, "delete location")
 		return
 	}
 
-	// CHeck if any rows were affected
+	// Check if any rows were affected
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		log.Printf("Error checking Rows Affected: %v", err)
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		handleError(w, err, "Database error", http.StatusInternalServerError)
+		return
 	}
 
 	if rowsAffected == 0 {
@@ -165,8 +165,7 @@ func createLocation(w http.ResponseWriter, r *http.Request) {
 	var newLocation Location
 	err := json.NewDecoder(r.Body).Decode(&newLocation)
 	if err != nil {
-		log.Printf("JSON decode error: %v", err)
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		handleError(w, err, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
@@ -178,8 +177,7 @@ func createLocation(w http.ResponseWriter, r *http.Request) {
 	err = db.QueryRow("INSERT INTO locations (name, address, latitude, longitude) VALUES ($1, $2, $3, $4) returning id", newLocation.Name, newLocation.Address, newLocation.Lat, newLocation.Lng).Scan(&newLocation.ID)
 
 	if err != nil {
-		log.Printf("Database insert error: %v", err)
-		http.Error(w, "Database error", http.StatusInternalServerError)
+		handleDatabaseError(w, err, "create location")
 		return
 	}
 
@@ -196,8 +194,7 @@ func handleLocations(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/locations")
 
 
-	if path == "" || path == "/"
-	{
+	if path == "" || path == "/" {
 		switch r.Method {
 		case http.MethodGet:
 			getLocations(w, r)
