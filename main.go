@@ -3,7 +3,9 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,14 +14,30 @@ import (
 )
 
 type Location struct {
-	ID      int     `json:"id"`
-	Name    string  `json:"name"`
-	Address string  `json:"address"`
-	Lat     float64 `json:"latitude"`
-	Lng     float64 `json:"longitude"`
+	ID       int     `json:"id"`
+	Name     string  `json:"name"`
+	Address  string  `json:"address"`
+	Lat      float64 `json:"latitude"`
+	Lng      float64 `json:"longitude"`
+	Distance float64 `json:"distance,omitempty"` // Only included when searching by distance
 }
 
 var db *sql.DB
+
+func calculateDistance(lat1, lon1, lat2, lon2 float64) float64 {
+	const R = 3958.756 //Earth's radius in miles
+
+	// Convert to radians
+	lat1Rad := lat1 * math.Pi / 180
+	lat2Rad := lat2 * math.Pi / 180
+	deltaLat := (lat2 - lat1) * math.Pi / 180
+	deltaLon := (lon2 - lon1) * math.Pi / 180
+
+	a := math.Sin(deltaLat/2)*math.Sin(deltaLat/2) + math.Cos(lat1Rad)*math.Cos(lat2Rad)*math.Sin(deltaLon/2)*math.Sin(deltaLon/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+
+	return R * c
+}
 
 // handleError provides unified error handling and logging
 func handleError(w http.ResponseWriter, err error, message string, statusCode int) {
@@ -62,11 +80,86 @@ func initDB() {
 // }
 
 func getLocations(w http.ResponseWriter, r *http.Request) {
-	rows, err := db.Query("Select id, name, address, latitude, longitude FROM locations ORDER by id")
+
+	query := r.URL.Query()
+	search := query.Get("search")
+	nearParam := query.Get("near")     // Format: "lat, lng"
+	radiusParam := query.Get("radius") // In miles
+	cityParam := query.Get("city")
+
+	//Build SQL Query
+	var sqlQuery string
+	var args []interface{}
+	var argCount int
+	var hasWhere bool
+
+	//Base query
+	sqlQuery = "SELECT id, name, address, latitude, longitude FROM locations"
+
+	// Add search filter
+	if search != "" {
+		if !hasWhere {
+			sqlQuery += " WHERE"
+			hasWhere = true
+		} else {
+			sqlQuery += " AND"
+		}
+		argCount++
+		searchPattern := "%" + search + "%"
+		sqlQuery += fmt.Sprintf(" (name ILIKE $%d OR address ILIKE $%d)", argCount, argCount+1)
+		args = append(args, searchPattern, searchPattern)
+		argCount++ // Increment again since we used two parameters
+	}
+
+	// Add City Filter
+	if cityParam != "" {
+		if !hasWhere {
+			sqlQuery += " WHERE"
+			hasWhere = true
+		} else {
+			sqlQuery += " AND"
+		}
+		argCount++
+		sqlQuery += fmt.Sprintf(" address ILIKE $%d", argCount)
+		args = append(args, "%"+cityParam+"%")
+	}
+
+	// Parse location-based search
+	var searchLat, searchLng, radiusMiles float64
+	var hasLocationSearch bool
+	if nearParam != "" {
+		coords := strings.Split(nearParam, ",")
+		if len(coords) == 2 {
+			if lat, err := strconv.ParseFloat(strings.TrimSpace(coords[0]), 64); err == nil {
+				if lng, err := strconv.ParseFloat(strings.TrimSpace(coords[1]), 64); err == nil {
+					searchLat = lat
+					searchLng = lng
+					hasLocationSearch = true
+
+					// Parse radius (default to 10 miles)
+					radiusMiles = 10
+					if radiusParam != "" {
+						if r, err := strconv.ParseFloat(radiusParam, 64); err == nil {
+							radiusMiles = r
+						}
+					}
+
+				}
+			}
+		}
+	}
+
+	sqlQuery += " ORDER BY id"
+
+	// Execute the query
+	log.Printf("SQL Query: %s", sqlQuery)
+	log.Printf("Parameters: %v", args)
+	rows, err := db.Query(sqlQuery, args...)
 	if err != nil {
 		handleDatabaseError(w, err, "query locations")
 		return
 	}
+
 	defer rows.Close()
 
 	var locations []Location
@@ -77,7 +170,29 @@ func getLocations(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Row scan error: %v", err)
 			continue
 		}
-		locations = append(locations, loc)
+
+		// If doing location-based search, calculate distance and filter
+		if hasLocationSearch {
+			distance := calculateDistance(searchLat, searchLng, loc.Lat, loc.Lng)
+			if distance <= radiusMiles {
+				loc.Distance = math.Round(distance*100) / 100 // Round to 2 decimal places
+				locations = append(locations, loc)
+			}
+		} else {
+			locations = append(locations, loc)
+		}
+	}
+
+	// Sort by distance if doing location-based search
+	if hasLocationSearch {
+		// Simple bubble sort by distance (for small datasets)
+		for i := 0; i < len(locations)-1; i++ {
+			for j := 0; j < len(locations)-i-1; j++ {
+				if locations[j].Distance > locations[j+1].Distance {
+					locations[j], locations[j+1] = locations[j+1], locations[j]
+				}
+			}
+		}
 	}
 
 	log.Printf("Method: %s, URL: %s", r.Method, r.URL.Path)
@@ -193,7 +308,6 @@ func handleLocations(w http.ResponseWriter, r *http.Request) {
 	//Parse URL path to extract ID if present
 	path := strings.TrimPrefix(r.URL.Path, "/locations")
 
-
 	if path == "" || path == "/" {
 		switch r.Method {
 		case http.MethodGet:
@@ -203,6 +317,7 @@ func handleLocations(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
+		return
 	}
 
 	// Handle /locations/{id}
