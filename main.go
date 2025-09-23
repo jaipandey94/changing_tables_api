@@ -344,6 +344,7 @@ func main() {
 	initDB()
 	defer db.Close()
 	http.HandleFunc("/locations", handleLocations)
+	http.HandleFunc("/locations/", handleLocations)
 	log.Println("Server starting on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
